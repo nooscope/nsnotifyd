@@ -372,6 +372,8 @@ zone_retry(zone *z) {
 	log_debug("%s retry at %s", z->name, isotime(z->refresh));
 }
 
+static bool nowait = false;
+
 static void
 zone_refresh(zone *zp, const char *cmd, const char *master) {
 	zone z = *zp; // only update *zp if the refresh succeeds
@@ -410,21 +412,26 @@ zone_refresh(zone *zp, const char *cmd, const char *master) {
 		execvp(cmd, (char**)cmdv);
 		err(1, "exec %s", cmd);
 	default:;
-		int r;
-		if(wait(&r) < 0)
-			log_err("wait: %m");
-		else if(!WIFEXITED(r))
-			log_err("%s died with signal %d",
-			    cmd, WTERMSIG(r));
-		else if(WEXITSTATUS(r) != 0)
-			log_err("%s exited with status %d",
-			    cmd, WEXITSTATUS(r));
-		else {
+		if(nowait) {
 			*zp = z; // success
 			return;
+		} else {
+			int r;
+			if(wait(&r) < 0)
+				log_err("wait: %m");
+			else if(!WIFEXITED(r))
+				log_err("%s died with signal %d",
+				    cmd, WTERMSIG(r));
+			else if(WEXITSTATUS(r) != 0)
+				log_err("%s exited with status %d",
+				    cmd, WEXITSTATUS(r));
+			else {
+				*zp = z; // success
+				return;
+			}
+			zone_retry(zp); // command failed
+			return;
 		}
-		zone_retry(zp); // command failed
-		return;
 	}
 }
 
@@ -440,6 +447,7 @@ usage(void) {
 "	-d		debugging mode\n"
 "			(use twice to print DNS messages)\n"
 "	-l facility	syslog facility name\n"
+"	-n		do not wait for the command to complete\n"
 "	-P pidfile	write daemon pid to this file\n"
 "	-p port		listen on this port number or service name\n"
 "			(default 53)\n"
@@ -470,7 +478,7 @@ main(int argc, char *argv[]) {
 	char *cmd = NULL;
 	int debug = 0;
 
-	while((r = getopt(argc, argv, "46a:dl:P:p:R:r:s:u:Vw")) != -1)
+	while((r = getopt(argc, argv, "46a:dl:nP:p:R:r:s:u:Vw")) != -1)
 		switch(r) {
 		case('4'):
 			family = PF_INET;
@@ -491,6 +499,9 @@ main(int argc, char *argv[]) {
 			if(facilitynames[i].c_name == NULL)
 				errx(1, "%s: Unknown syslog facility", optarg);
 			facility = facilitynames[i].c_val;
+			continue;
+		case('n'):
+			nowait = true;
 			continue;
 		case('P'):
 			pidfile = optarg;
